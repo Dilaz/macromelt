@@ -114,21 +114,53 @@ fn disc2_meshes_reach_their_declared_counts() {
     assert_eq!(camerabox.2, (24, 12), "camerabox is a 24-position box");
 }
 
+/// One fixture root's full `.xmed` census.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Corpus {
+    /// Files with at least one mesh declaration.
+    geometry: usize,
+    /// Meshes across those files.
+    meshes: usize,
+    /// Director *text* members, which share the `.xmed` extension.
+    text: usize,
+    /// Files that parse as XMED but declare no mesh.
+    empty: usize,
+    attributes: BTreeMap<u32, usize>,
+}
+
+/// What each Tallitytöt disc must yield, measured 2026-09-12.
+///
+/// Pinning the totals is the point: without them a half-finished extraction or
+/// a `parse_xmed` regression would quietly reclassify geometry as text members
+/// and this test would sweep a shrunken corpus while still reporting success.
+fn expected_corpus(root: &Path) -> Option<Corpus> {
+    let (geometry, meshes, text, empty, attributes): (_, _, _, _, &[(u32, usize)]) =
+        match root.file_name()?.to_str()? {
+            "tallitytot" => (198, 424, 640, 269, &[(4, 424)]),
+            "tallitytot2" => (112, 857, 206, 238, &[(4, 235), (6, 622)]),
+            _ => return None,
+        };
+    Some(Corpus {
+        geometry,
+        meshes,
+        text,
+        empty,
+        attributes: attributes.iter().copied().collect(),
+    })
+}
+
 /// The whole-corpus guard, over every `.xmed` under every configured fixture
 /// root: no file, of either variant, may decode short. This is what keeps disc
 /// 1 byte-identical — it takes the `attributes = 4` path on every one of its
 /// meshes and must stay untouched by the record added for `attributes = 6`.
 ///
-/// Beyond the counts it asserts the two structural claims this file's header
-/// makes, so neither is left to a printed number nobody reads:
+/// Nothing is skipped quietly and nothing is merely printed. Every `.xmed` is
+/// read and classified, a root of a known disc is held to its exact census
+/// (`expected_corpus`), and the two structural claims this file's header makes
+/// are asserted for every root, known or not:
 ///  - only `4` and `6` occur, i.e. no third variant slips in undecoded;
 ///  - no single file mixes them, which is what makes the gate per mesh and not
 ///    per title.
-///
-/// Nothing is skipped quietly. A `.xmed` that will not parse is counted: the
-/// extension is shared with Director *text* members, which legitimately are not
-/// geometry, but the count has to stay visible — a parse regression would
-/// otherwise drain this test of its corpus while still reporting success.
 #[test]
 fn every_fixture_mesh_reaches_its_declared_counts() {
     let roots = common::fixture_roots();
@@ -137,32 +169,31 @@ fn every_fixture_mesh_reaches_its_declared_counts() {
         return;
     }
 
-    let (mut files, mut meshes, mut text_members, mut empty) = (0usize, 0usize, 0usize, 0usize);
-    let mut by_attributes: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut total = Corpus::default();
     for root in &roots {
         let dir = root.join("extracted/assets");
         let paths = xmed_files(&dir);
         assert!(!paths.is_empty(), "no .xmed under {}", dir.display());
 
+        let mut corpus = Corpus::default();
         for path in paths {
             let data =
                 std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             // Director text members share the extension; they are not geometry.
             let Ok(xmed) = parse_xmed(&data) else {
-                text_members += 1;
+                corpus.text += 1;
                 continue;
             };
             if xmed.mesh_descriptions.is_empty() {
-                empty += 1;
+                corpus.empty += 1;
                 continue;
             }
-            files += 1;
+            corpus.geometry += 1;
 
-            let decoded = decode_xmed(&xmed);
             let mut seen: BTreeMap<u32, usize> = BTreeMap::new();
-            for (name, attributes, got, declared) in decoded {
-                meshes += 1;
-                *by_attributes.entry(attributes).or_default() += 1;
+            for (name, attributes, got, declared) in decode_xmed(&xmed) {
+                corpus.meshes += 1;
+                *corpus.attributes.entry(attributes).or_default() += 1;
                 *seen.entry(attributes).or_default() += 1;
                 assert_eq!(
                     got,
@@ -178,15 +209,31 @@ fn every_fixture_mesh_reaches_its_declared_counts() {
                 path.display(),
             );
         }
+
+        assert!(
+            corpus.attributes.keys().all(|a| *a == 4 || *a == 6),
+            "{}: unknown attributes variant in {:?}; only bit 1 is decoded",
+            root.display(),
+            corpus.attributes,
+        );
+        if let Some(want) = expected_corpus(root) {
+            assert_eq!(corpus, want, "{} census", root.display());
+        } else {
+            eprintln!("{}: unpinned fixture root, {corpus:?}", root.display());
+        }
+
+        total.geometry += corpus.geometry;
+        total.meshes += corpus.meshes;
+        total.text += corpus.text;
+        total.empty += corpus.empty;
+        for (k, v) in corpus.attributes {
+            *total.attributes.entry(k).or_default() += v;
+        }
     }
 
-    assert!(files > 0, "no 3D fixtures found under {roots:?}");
-    assert!(
-        by_attributes.keys().all(|a| *a == 4 || *a == 6),
-        "unknown attributes variant in {by_attributes:?}; only bit 1 is decoded",
-    );
+    assert!(total.geometry > 0, "no 3D fixtures found under {roots:?}");
     eprintln!(
-        "{meshes} meshes in {files} files (+{text_members} text members, \
-         {empty} without geometry); attributes histogram {by_attributes:?}",
+        "{} meshes in {} files (+{} text members, {} without geometry); histogram {:?}",
+        total.meshes, total.geometry, total.text, total.empty, total.attributes,
     );
 }
