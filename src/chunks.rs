@@ -214,11 +214,11 @@ pub struct SiblingMesh {
 
 /// Mesh description / Author Mesh Declaration (0x45 chunk).
 ///
-/// Layout, validated against all 424 declarations under `extracted/assets`:
+/// Layout, validated against all 1281 declarations of the two Tallitytöt discs:
 ///
 /// ```text
 ///   name : string
-///   u32    attributes                     (always 4)
+///   u32    attributes                     (bit 1 = per-face attribute record)
 ///   u32    num_shaders = N                (shading-group count)
 ///   N × u32[6] { positions, faces, normals, texcoords, colors, attribute_mask }
 ///   u32    extra_count = M                (number of name arrays)
@@ -237,7 +237,13 @@ pub struct SiblingMesh {
 pub struct MeshDescription {
     /// Mesh name; the 0x49 geometry chunks and the 0x72 node's `mesh_ref` use it.
     pub name: String,
-    /// Mesh-level attribute word (first u32 after the name). Always 4 here.
+    /// Mesh-level attribute word (first u32 after the name).
+    ///
+    /// Bit 1 (`& 2`) says every new face in the 0x49 stream carries the
+    /// attribute-face record of `call_7a18a990.c:1209-1324` — the parallel
+    /// per-corner attribute-index array. It is set per mesh, not per file or
+    /// per title: of the 1281 declarations on the two Tallitytöt discs, 659 are
+    /// `4` and 622 are `6` (disc 1 all 4; disc 2 mixes 235 and 622).
     pub attributes: u32,
     /// Shading-group count (== `shaders.len()`).
     pub num_shaders: u32,

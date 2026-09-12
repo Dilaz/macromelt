@@ -930,6 +930,9 @@ struct RecordEnv {
     count_cap: u32,
     /// Ceiling on a decoded face corner (a position index).
     pos_cap: u32,
+    /// Whether each new face carries the attribute-face record of
+    /// `call_7a18a990.c:1209-1324` (mesh `attributes` bit 1).
+    attribute_faces: bool,
     trace: bool,
     dump_faces: bool,
     face_capacity: usize,
@@ -992,6 +995,7 @@ fn decode_chunk_into(
             .map(|x| x.num_positions)
             .unwrap_or(u32::MAX / 4)
             .max(updates),
+        attribute_faces: md.is_some_and(|m| m.attributes & 2 != 0),
         trace,
         dump_faces: log_enabled!(target: "macromelt::facedump", Level::Trace),
         // Declared face capacity — the allocated slot count the winedbg
@@ -1517,6 +1521,59 @@ fn decode_record(
                     );
                 }
                 return false;
+            }
+            // ── per-face attribute-face record (ctx 0x1d..0x24) ──
+            // `call_7a18a990.c:1209-1324`, inside this same new-face loop and
+            // gated on `decoder->0x64 != 0 && decoder->0x84 != 0`. It fills a
+            // second, 28-byte-per-face array parallel to the position faces:
+            // three per-corner attribute indices at +0x00, three next-face links
+            // at +0x0c, three next-corner bytes at +0x18 and the ctx0x1d byte at
+            // +0x1b — a per-corner linked list of faces sharing one attribute
+            // index. Nothing in it feeds position or face reconstruction, so the
+            // values are read and dropped; what matters is that the bits are
+            // consumed, because the next face's ctx0x19 corner type follows them.
+            //
+            // Discriminator: the 0x45 declaration's mesh `attributes` word. It is
+            // 4 on every one of disc 1's 424 declarations (block absent) and 6 on
+            // every one of disc 2's (block present); the whole disc-2 corpus
+            // desyncs on the second face of the first record without it.
+            if env.attribute_faces {
+                // `faceRec + 0x1b`; `decoder->0xa0[group]` still holds this
+                // face's index — it is incremented at `:1325`, after the block.
+                let face_index = live.faces.len() as u32;
+                bs.read_compressed_u8(0x1d);
+                for _ in 0..3 {
+                    // `auStack_80[j]`, stored at `faceRec + 0x18 + j`.
+                    bs.read_compressed_u8(0x1e);
+                }
+                for _ in 0..3 {
+                    match bs.read_compressed_u8(0x1f) {
+                        // Walk the existing linked list from a predecessor face
+                        // (`FUN_7a15b810` + the loop at `:1266-1279`): split index
+                        // then step count, both read, the walk itself consuming no
+                        // bits.
+                        0..=2 => {
+                            bs.read_compressed_u32(0x22);
+                            bs.read_compressed_u32(0x23);
+                        }
+                        // `:1292-1296` — absolute index in a static context keyed
+                        // by this group's running face count.
+                        4 => {
+                            bs.read_compressed_u32(0x20);
+                            bs.read_compressed_u32(face_index.wrapping_add(X_AC_STATIC_FULL));
+                        }
+                        // `:1301-1305` — delta off this group's face count.
+                        5 => {
+                            bs.read_compressed_u32(0x20);
+                            bs.read_compressed_u32(0x21);
+                        }
+                        // `:1284-1289` — delta off `preds[type - 6]`.
+                        _ => {
+                            bs.read_compressed_u32(0x20);
+                            bs.read_compressed_u32(0x24);
+                        }
+                    }
+                }
             }
             live.push_face(corners);
             if dump_faces {

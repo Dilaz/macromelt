@@ -246,6 +246,21 @@ Several 0x49 chunks may refine one mesh; `XmedFile::geometry_groups()` keys them
 mesh name, in first-appearance order, with file order inside a group. See `cargo doc` for
 the per-chunk field layout.
 
+### Mesh variants
+
+The 0x49 record layout is not the same for every file. Bit 1 of the 0x45 declaration's
+`attributes` word says that each new face is followed by an **attribute-face record**: a
+parallel 28-byte-per-face structure (three per-corner attribute indices, three next-face
+links, three next-corner bytes and a type byte) that the original fills to track which faces
+share an attribute index. Nothing in it feeds position or face reconstruction, so macromelt
+reads and discards it — but it has to be read, because the next face's corner type follows
+its bits.
+
+Both values occur in the wild, and the flag is per mesh, not per title: across the two
+Tallitytöt discs 659 of 1281 mesh declarations are `attributes = 4` and 622 are
+`attributes = 6`. The first disc is uniformly 4; the second mixes them 235/622, though never
+inside a single file — 69 of its 112 3D files are all-4 and the remaining 43 all-6.
+
 ## Debugging
 
 Nothing is printed by the library: every diagnostic goes through the [`log`] facade.
@@ -280,11 +295,15 @@ environment variable and **skip** when it is unset:
 ```sh
 cargo test                                    # fixture-backed tests print "skip:"
 MACROMELT_FIXTURES=/path/to/fixtures cargo test
+MACROMELT_FIXTURES=/path/to/disc1:/path/to/disc2 cargo test
 ```
 
-`MACROMELT_FIXTURES` points at a directory holding `extracted/assets/…` (the raw `.xmed`
-files), `assets/models/obj/…` (reference OBJs, for the decode-parity tests) and
-`assets/models/gltf/…` (previously baked GLBs, for the regression tests).
+`MACROMELT_FIXTURES` is a `:`-separated list of directories, each holding
+`extracted/assets/…` (the raw `.xmed` files), `assets/models/obj/…` (reference OBJs, for the
+decode-parity tests) and `assets/models/gltf/…` (previously baked GLBs, for the regression
+tests). A fixture is looked up in each root in turn, so one run can cover several discs —
+which matters because they do not all use the same mesh variant (see
+[Format notes](#format-notes)).
 
 ## License
 

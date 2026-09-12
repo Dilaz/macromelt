@@ -11,23 +11,33 @@
 
 use std::path::PathBuf;
 
-/// Root of a tallitytot game directory (`games/tallitytot`) holding
-/// `extracted/assets`, `assets/models/obj` and `assets/models/gltf`.
-pub fn fixtures_root() -> Option<PathBuf> {
-    std::env::var_os("MACROMELT_FIXTURES").map(PathBuf::from)
+/// Game directories (`games/tallitytot`, `games/tallitytot2`) holding
+/// `extracted/assets` and `assets/models/gltf`, in `MACROMELT_FIXTURES` order.
+///
+/// The variable is a `:`-separated list so one run can cover discs that differ
+/// in format — disc 2's meshes carry the attribute-face record that disc 1's do
+/// not (`geometry::RecordEnv::attribute_faces`).
+pub fn fixture_roots() -> Vec<PathBuf> {
+    match std::env::var_os("MACROMELT_FIXTURES") {
+        Some(v) => std::env::split_paths(&v).collect(),
+        None => Vec::new(),
+    }
 }
 
-/// Resolve `rel` under [`fixtures_root`], or `None` — after printing why — when
-/// `MACROMELT_FIXTURES` is unset or the file is not there.
+/// Resolve `rel` under the first [`fixture_roots`] entry that has it, or `None`
+/// — after printing why — when `MACROMELT_FIXTURES` is unset or no root has it.
 pub fn fixture(rel: &str) -> Option<PathBuf> {
-    let Some(root) = fixtures_root() else {
+    let roots = fixture_roots();
+    if roots.is_empty() {
         eprintln!("skip: MACROMELT_FIXTURES unset, cannot resolve {rel}");
         return None;
-    };
-    let path = root.join(rel);
-    if !path.exists() {
-        eprintln!("skip: {rel} missing under {}", root.display());
-        return None;
     }
-    Some(path)
+    for root in &roots {
+        let path = root.join(rel);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    eprintln!("skip: {rel} missing under every MACROMELT_FIXTURES root");
+    None
 }
