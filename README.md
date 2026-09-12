@@ -29,7 +29,7 @@ stored **wxyz**, and inverse-quantisation factors multiply decoded integers back
 Requires Rust 1.85 or newer.
 
 ```sh
-cargo install --git https://github.com/Dilaz/macromelt --tag v0.1.0 --locked macromelt
+cargo install --git https://github.com/Dilaz/macromelt --tag v0.1.1 --locked macromelt
 ```
 
 ## CLI
@@ -103,7 +103,7 @@ macromelt horse_walk.xmed --dump-keyframes "" | head -40
 
 ```toml
 [dependencies]
-macromelt = { git = "https://github.com/Dilaz/macromelt", tag = "v0.1.0", default-features = false }
+macromelt = { git = "https://github.com/Dilaz/macromelt", tag = "v0.1.1", default-features = false }
 ```
 
 `default-features = false` drops the CLI's `clap` and `env_logger` dependencies.
