@@ -306,20 +306,17 @@ fn material_key(name: &str) -> String {
 }
 
 /// Inflate a zlib alpha plane to `width * height` 8-bit samples.
-fn inflate_alpha_plane(zlib: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+fn inflate_alpha_plane(zlib: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ExportError> {
     let mut alpha = Vec::with_capacity((width * height) as usize);
     ZlibDecoder::new(zlib)
         .read_to_end(&mut alpha)
-        .map_err(|e| format!("alpha plane inflate failed: {}", e))?;
+        .map_err(|e| ExportError::Other(format!("alpha plane inflate failed: {e}")))?;
     let expected = (width as usize) * (height as usize);
     if alpha.len() != expected {
-        return Err(format!(
-            "alpha plane inflated to {} bytes, expected {}x{} = {}",
+        return Err(ExportError::Other(format!(
+            "alpha plane inflated to {} bytes, expected {width}x{height} = {expected}",
             alpha.len(),
-            width,
-            height,
-            expected
-        ));
+        )));
     }
     Ok(alpha)
 }
@@ -330,34 +327,35 @@ fn inflate_alpha_plane(zlib: &[u8], width: u32, height: u32) -> Result<Vec<u8>, 
 /// `assets/models/obj/lynet/hale.png` has RGB byte-equal to the embedded JPEG
 /// and alpha byte-equal to the inflated plane *flipped vertically* (64x128,
 /// 8192 samples). So the plane rows are read in reverse here.
-fn merge_alpha_png(jpeg: &[u8], plane: (u32, u32, &[u8])) -> Result<Vec<u8>, String> {
+fn merge_alpha_png(jpeg: &[u8], plane: (u32, u32, &[u8])) -> Result<Vec<u8>, ExportError> {
     let (plane_w, plane_h, zlib) = plane;
     let alpha = inflate_alpha_plane(zlib, plane_w, plane_h)?;
 
     let mut decoder = JpegDecoder::new(Cursor::new(jpeg));
     let pixels = decoder
         .decode()
-        .map_err(|e| format!("JPEG decode failed: {}", e))?;
-    let info = decoder.info().ok_or("JPEG has no image info")?;
+        .map_err(|e| ExportError::Other(format!("JPEG decode failed: {e}")))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| ExportError::Other("JPEG has no image info".into()))?;
     let (w, h) = (u32::from(info.width), u32::from(info.height));
     if (w, h) != (plane_w, plane_h) {
-        return Err(format!(
-            "alpha plane {}x{} does not match JPEG {}x{}",
-            plane_w, plane_h, w, h
-        ));
+        return Err(ExportError::Other(format!(
+            "alpha plane {plane_w}x{plane_h} does not match JPEG {w}x{h}"
+        )));
     }
     let px_count = (w as usize) * (h as usize);
     if px_count == 0 || pixels.len() % px_count != 0 {
-        return Err(format!(
-            "unexpected JPEG buffer: {} bytes for {}x{}",
+        return Err(ExportError::Other(format!(
+            "unexpected JPEG buffer: {} bytes for {w}x{h}",
             pixels.len(),
-            w,
-            h
-        ));
+        )));
     }
     let channels = pixels.len() / px_count;
     if channels != 1 && channels != 3 {
-        return Err(format!("unsupported JPEG channel count {}", channels));
+        return Err(ExportError::Other(format!(
+            "unsupported JPEG channel count {channels}"
+        )));
     }
 
     let mut rgba = Vec::with_capacity(px_count * 4);
@@ -383,13 +381,13 @@ fn merge_alpha_png(jpeg: &[u8], plane: (u32, u32, &[u8])) -> Result<Vec<u8>, Str
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder
             .write_header()
-            .map_err(|e| format!("PNG header write failed: {}", e))?;
+            .map_err(|e| ExportError::Other(format!("PNG header write failed: {e}")))?;
         writer
             .write_image_data(&rgba)
-            .map_err(|e| format!("PNG write failed: {}", e))?;
+            .map_err(|e| ExportError::Other(format!("PNG write failed: {e}")))?;
         writer
             .finish()
-            .map_err(|e| format!("PNG finish failed: {}", e))?;
+            .map_err(|e| ExportError::Other(format!("PNG finish failed: {e}")))?;
     }
     Ok(png_bytes)
 }
