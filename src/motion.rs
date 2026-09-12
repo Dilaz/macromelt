@@ -7,7 +7,8 @@
 //! key so `t = 0` is the first pose.
 //!
 //! Implements the IFX v2 motion decoder. Key differences from U3D:
-//!   - Only track 0 has a header (name + params); tracks 1+ share params
+//!   - Every track carries its own header (name, keyframe count, displacement
+//!     and scale quantization), not just track 0
 //!   - Escape reads use AC static with SwapBits8 (ReadSymbolContext8)
 
 use log::{debug, info, warn};

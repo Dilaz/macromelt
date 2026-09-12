@@ -25,8 +25,12 @@ const FAST_NOT_MASK: [u32; 5] = [
 ];
 
 /// Dynamic histogram using dense array indexed by symbol value.
-/// Matches the C++ IFXHistogramDynamic: symbols are ordered by numeric value,
-/// not insertion order. Includes elephant scaling (halve frequencies at 0x1FFF).
+/// Matches the C++ `IFXHistogramDynamic`: symbols are ordered by numeric value,
+/// not insertion order, and the "elephant" rescale halves every count once the
+/// running total reaches [`ELEPHANT_THRESHOLD`]. Encoder and decoder rescale on
+/// exactly the same symbol, so the details in [`DynamicHistogram::add_symbol`]
+/// are load-bearing: getting them wrong desyncs the whole stream from the first
+/// rescale onwards.
 #[derive(Clone, Debug)]
 struct DynamicHistogram {
     /// Symbol count array — indexed by symbol value. Length = max_symbol + 1.
@@ -34,6 +38,8 @@ struct DynamicHistogram {
     total: u32,
 }
 
+/// `CIFXBitStreamX::m_uElephant` — the running symbol total at which a dynamic
+/// context halves every count (`CIFXBitStreamX.cpp:662`).
 const ELEPHANT_THRESHOLD: u32 = 0x1FFF;
 
 impl DynamicHistogram {
@@ -85,32 +91,34 @@ impl DynamicHistogram {
 
     fn add_symbol(&mut self, symbol: u32) {
         let idx = symbol as usize;
-        // `IFXHistogramDynamic::AddSymbol` ignores symbols above
-        // `m_uMaximumSymbolInHistogram = 0xFFFF` (IFXHistogramDynamic.cpp:29,355)
-        // — no count, no elephant rescale. Large raw escapes hit this routinely.
+        // `IFXHistogramDynamic::AddSymbolRef` guards the whole body with
+        // `symbol <= m_uMaximumSymbolInHistogram` (0xFFFF): a larger symbol is
+        // neither counted nor allowed to trigger the rescale. Large raw escape
+        // literals hit this routinely.
         if idx > 0xFFFF {
             return;
         }
-        // Grow the array if needed
+
+        // "Elephant" rescale, checked *before* this symbol is counted and
+        // driven by the running total (`m_pu16CumulativeCount4[0]`). The halving
+        // truncates, so a symbol seen once drops out of the model entirely and
+        // the encoder must escape it again; only the escape symbol is kept alive,
+        // by adding one rather than clamping.
+        if self.total >= ELEPHANT_THRESHOLD {
+            self.total = 0;
+            for count in &mut self.counts {
+                *count >>= 1;
+                self.total += *count;
+            }
+            self.counts[0] += 1;
+            self.total += 1;
+        }
+
         if idx >= self.counts.len() {
             self.counts.resize(idx + 1, 0);
         }
         self.counts[idx] += 1;
         self.total += 1;
-
-        // Elephant scaling: halve all counts when total exceeds threshold
-        if self.total >= ELEPHANT_THRESHOLD {
-            self.total = 0;
-            for count in &mut self.counts {
-                *count = (*count + 1) / 2; // round up to prevent zero
-                self.total += *count;
-            }
-            // Ensure escape symbol (0) never reaches 0
-            if self.counts[0] == 0 {
-                self.counts[0] = 1;
-                self.total += 1;
-            }
-        }
     }
 }
 
@@ -830,5 +838,56 @@ impl BitStream {
                 syms.join(",")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DynamicHistogram, ELEPHANT_THRESHOLD};
+
+    /// The "elephant" rescale must reproduce `IFXHistogramDynamic::AddSymbolRef`
+    /// exactly, because the encoder rescaled on one specific symbol and every
+    /// later symbol is decoded against the resulting frequencies. Three details
+    /// are load-bearing and each was once wrong here, desyncing any stream long
+    /// enough to reach the threshold: the check runs *before* the new symbol is
+    /// counted, the halving *truncates* (so a symbol seen once leaves the model),
+    /// and the escape symbol is kept alive by *adding* one rather than clamping
+    /// a zeroed count back to one.
+    #[test]
+    fn elephant_rescale_matches_ifx() {
+        let mut hist = DynamicHistogram::new();
+
+        // Escape count above 1 so that "+1" and "clamp to 1" differ afterwards.
+        for _ in 0..4 {
+            hist.add_symbol(0);
+        }
+        assert_eq!(hist.get_freq(0), 5);
+        assert_eq!(hist.total, 5);
+
+        // Walk the total up to — but not past — the threshold.
+        let fills = ELEPHANT_THRESHOLD - hist.total;
+        for _ in 0..fills {
+            hist.add_symbol(1);
+        }
+        assert_eq!(hist.total, ELEPHANT_THRESHOLD);
+        assert_eq!(hist.get_freq(0), 5);
+        assert_eq!(hist.get_freq(1), fills);
+
+        // This symbol trips the rescale: counts halve (5 -> 2, 8186 -> 4093),
+        // the escape gains one (2 -> 3), and only then is symbol 1 counted.
+        hist.add_symbol(1);
+        assert_eq!(hist.get_freq(0), 3);
+        assert_eq!(hist.get_freq(1), fills / 2 + 1);
+        assert_eq!(hist.total, 4097);
+    }
+
+    /// Symbols above `m_uMaximumSymbolInHistogram` are ignored outright — they
+    /// neither gain a count nor advance the total toward a rescale.
+    #[test]
+    fn oversized_symbols_are_not_modelled() {
+        let mut hist = DynamicHistogram::new();
+        hist.add_symbol(0x1_0000);
+        assert_eq!(hist.total, 1);
+        assert_eq!(hist.get_freq(0x1_0000), 0);
     }
 }
