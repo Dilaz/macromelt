@@ -61,15 +61,20 @@ fn decode_all(rel: &str) -> Option<Vec<MeshCounts>> {
 }
 
 /// Every `.xmed` under `dir`, recursively, in sorted order.
+///
+/// A directory that cannot be listed is a broken fixture root, not something
+/// to walk past: a silent `continue` here would turn a mistyped
+/// `MACROMELT_FIXTURES` into a test that passes over nothing.
 fn xmed_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
+        let entries =
+            std::fs::read_dir(&d).unwrap_or_else(|e| panic!("read_dir {}: {e}", d.display()));
+        for e in entries {
+            let p = e
+                .unwrap_or_else(|e| panic!("dirent under {}: {e}", d.display()))
+                .path();
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "xmed") {
@@ -114,8 +119,16 @@ fn disc2_meshes_reach_their_declared_counts() {
 /// 1 byte-identical — it takes the `attributes = 4` path on every one of its
 /// meshes and must stay untouched by the record added for `attributes = 6`.
 ///
-/// It also prints the `attributes` histogram, which is how the one-variant-per-
-/// title claim in this file's header is checked rather than assumed.
+/// Beyond the counts it asserts the two structural claims this file's header
+/// makes, so neither is left to a printed number nobody reads:
+///  - only `4` and `6` occur, i.e. no third variant slips in undecoded;
+///  - no single file mixes them, which is what makes the gate per mesh and not
+///    per title.
+///
+/// Nothing is skipped quietly. A `.xmed` that will not parse is counted: the
+/// extension is shared with Director *text* members, which legitimately are not
+/// geometry, but the count has to stay visible — a parse regression would
+/// otherwise drain this test of its corpus while still reporting success.
 #[test]
 fn every_fixture_mesh_reaches_its_declared_counts() {
     let roots = common::fixture_roots();
@@ -124,34 +137,56 @@ fn every_fixture_mesh_reaches_its_declared_counts() {
         return;
     }
 
-    let (mut files, mut meshes) = (0usize, 0usize);
+    let (mut files, mut meshes, mut text_members, mut empty) = (0usize, 0usize, 0usize, 0usize);
     let mut by_attributes: BTreeMap<u32, usize> = BTreeMap::new();
     for root in &roots {
-        for path in xmed_files(&root.join("extracted/assets")) {
-            let Ok(data) = std::fs::read(&path) else {
-                continue;
-            };
-            // Director text members share the extension; they are rejected here.
+        let dir = root.join("extracted/assets");
+        let paths = xmed_files(&dir);
+        assert!(!paths.is_empty(), "no .xmed under {}", dir.display());
+
+        for path in paths {
+            let data =
+                std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            // Director text members share the extension; they are not geometry.
             let Ok(xmed) = parse_xmed(&data) else {
+                text_members += 1;
                 continue;
             };
             if xmed.mesh_descriptions.is_empty() {
+                empty += 1;
                 continue;
             }
             files += 1;
-            for (name, attributes, decoded, declared) in decode_xmed(&xmed) {
+
+            let decoded = decode_xmed(&xmed);
+            let mut seen: BTreeMap<u32, usize> = BTreeMap::new();
+            for (name, attributes, got, declared) in decoded {
                 meshes += 1;
                 *by_attributes.entry(attributes).or_default() += 1;
+                *seen.entry(attributes).or_default() += 1;
                 assert_eq!(
-                    decoded,
+                    got,
                     declared,
                     "{}: {name} (attributes = {attributes}) decoded vs declared",
                     path.display(),
                 );
             }
+            assert_eq!(
+                seen.len(),
+                1,
+                "{}: one file mixes attribute variants {seen:?}",
+                path.display(),
+            );
         }
     }
 
     assert!(files > 0, "no 3D fixtures found under {roots:?}");
-    eprintln!("{meshes} meshes in {files} files; attributes histogram {by_attributes:?}");
+    assert!(
+        by_attributes.keys().all(|a| *a == 4 || *a == 6),
+        "unknown attributes variant in {by_attributes:?}; only bit 1 is decoded",
+    );
+    eprintln!(
+        "{meshes} meshes in {files} files (+{text_members} text members, \
+         {empty} without geometry); attributes histogram {by_attributes:?}",
+    );
 }
