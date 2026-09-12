@@ -1,6 +1,6 @@
 [package]
 name = "macromelt"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Decoder for Macromedia Director Shockwave 3D cast members (XMED / W3D): CLOD meshes, skins, motions, textures and materials, baked to glTF 2.0"
